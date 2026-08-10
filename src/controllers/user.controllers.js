@@ -142,8 +142,9 @@ const logout = async (req, res) => {
     }
 };
 
-export {
+export default {
     register,
     login,
     logout
 };
+
