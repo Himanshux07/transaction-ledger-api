@@ -1,4 +1,5 @@
 import User from "../models/user.models.js";
+import { sendRegistrationEmail } from "../services/email.js";
 
 const cookieOptions = {
     httpOnly: true,
@@ -43,6 +44,13 @@ const register = async (req, res) => {
             createdAt: user.createdAt
         };
 
+        // Try sending registration email safely without failing registration response if email fails
+        try {
+            await sendRegistrationEmail(user.email, user.name);
+        } catch (emailError) {
+            console.error("Error sending registration email:", emailError);
+        }
+
         res.status(201)
             .cookie("token", token, cookieOptions)
             .json({
@@ -51,7 +59,8 @@ const register = async (req, res) => {
                 token,
                 data: userResponse
             });
-    } catch (error) {
+    } 
+    catch (error) {
         res.status(500).json({
             success: false,
             message: error.message || "Error registering user"
