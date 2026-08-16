@@ -55,7 +55,46 @@ async function sendRegistrationEmail(userEmail, name) {
     }
 }
 
-export { sendEmail, sendRegistrationEmail };
-export default { sendEmail, sendRegistrationEmail };
+async function sendTransactionEmail(userEmail, name, transactionId) {
+    try {
+        const subject = "Transaction successful";
+        const text = `Hello ${name},\n\nYour transaction ${transactionId} was successful.`;
+        const html = `<h1>Hello ${name},</h1><p>Your transaction ${transactionId} was successful.</p>`;
+
+        await sendEmail(userEmail, subject, text, html);
+    } 
+    catch (error) {
+        console.error("Error sending transaction email:", error);
+    }
+}
+
+async function sendTransactionFailedEmail(userEmail, name, transactionId) {
+    try {
+        const subject = "Transaction failed";
+        const text = `Hello ${name},\n\nYour transaction ${transactionId} failed.`;
+        const html = `<h1>Hello ${name},</h1><p>Your transaction ${transactionId} failed.</p>`;
+
+        await sendEmail(userEmail, subject, text, html);
+    } 
+    catch (error) {
+        console.error("Error sending transaction failed email:", error);
+    }
+}
+
+async function sendTransactionReversedEmail(userEmail, name, transactionId) {
+    try {
+        const subject = "Transaction reversed";
+        const text = `Hello ${name},\n\nYour transaction ${transactionId} was reversed.`;
+        const html = `<h1>Hello ${name},</h1><p>Your transaction ${transactionId} was reversed.</p>`;
+
+        await sendEmail(userEmail, subject, text, html);
+    } 
+    catch (error) {
+        console.error("Error sending transaction reversed email:", error);
+    }
+}
+
+export { sendEmail, sendRegistrationEmail, sendTransactionEmail, sendTransactionFailedEmail, sendTransactionReversedEmail };
+export default { sendEmail, sendRegistrationEmail, sendTransactionEmail, sendTransactionFailedEmail, sendTransactionReversedEmail };
 
 

@@ -2,6 +2,7 @@ import Transaction from "../models/transaction.models.js";
 import Account from "../models/account.models.js";
 import Ledger from "../models/ledger.models.js";
 import mongoose from "mongoose";
+import { sendTransactionEmail, sendTransactionFailedEmail, sendTransactionReversedEmail } from "../services/email.js";
 
 const createTransaction = async(req,res)=>{
     try {
@@ -134,6 +135,13 @@ const createTransaction = async(req,res)=>{
             message: "Transaction created successfully",
             transaction
         })
+
+        /*
+            send email notification
+        */
+       
+        sendTransactionEmail(fromUserAccount.email, fromUserAccount.name, transaction._id);
+        sendTransactionEmail(toUserAccount.email, toUserAccount.name, transaction._id);
     } 
     catch (error) {
         res.status(500).json({
