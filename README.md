@@ -5,7 +5,6 @@
 [![MongoDB](https://img.shields.io/badge/MongoDB-v6%2B-47A248?logo=mongodb&logoColor=white)](https://www.mongodb.com/)
 [![Mongoose](https://img.shields.io/badge/Mongoose-v9.x-880000?logo=mongoose&logoColor=white)](https://mongoosejs.com/)
 [![JWT Auth](https://img.shields.io/badge/JWT-Protected-000000?logo=jsonwebtokens&logoColor=white)](https://jwt.io/)
-[![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](https://opensource.org/licenses/ISC)
 
 > **Enterprise-Grade, ACID-Compliant Double-Entry Ledger & Transaction Management Engine.**  
 > Designed for high-integrity financial operations with strict immutability guarantees, idempotency protection, dynamic balance aggregation, and automated asynchronous email notifications.
@@ -30,7 +29,6 @@
   - [Environment Configuration](#environment-configuration)
   - [Running the Server](#running-the-server)
 - [Security & Integrity Protections](#-security--integrity-protections)
-- [License](#-license)
 
 ---
 
