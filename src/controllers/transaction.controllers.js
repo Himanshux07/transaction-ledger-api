@@ -175,4 +175,103 @@ const createTransaction = async (req, res) => {
     }
 };
 
-export default { createTransaction };
+const createInitialFundsTransaction = async (req, res) => {
+    let session
+    try {
+        const {toAccount,amount,idempotencyKey} = req.body;
+
+        if(!toAccount || !amount || !idempotencyKey){
+            return res.status(400).json({
+                success: false,
+                message: "All fields are required"
+            });
+        }
+        const toUserAccount = await Account.findOne({_id : toAccount})
+
+        if(!toUserAccount){
+            return res.status(404).json({
+                success: false,
+                message: "To account not found"
+            });
+        }
+        const fromUserAccount = await Account.findOne({
+            user: req.user._id
+        })
+        
+        if(!fromUserAccount){
+            return res.status(404).json({
+                success: false,
+                message: "From account not found"
+            });
+        }
+
+        try {
+            session = await mongoose.startSession();
+            session.startTransaction();
+
+            const [transaction] = await Transaction.create(
+                [
+                    {
+                        fromAccount: fromUserAccount._id,
+                        toAccount: toUserAccount._id,
+                        amount,
+                        idempotencyKey,
+                        status: "pending"
+                    }
+                ],
+                { session }
+            );
+
+            await Ledger.create(
+                [
+                    {
+                        account: fromUserAccount._id,
+                        type: "debit",
+                        amount,
+                        transaction: transaction._id
+                    }
+                ],
+                { session }
+            );
+
+            await Ledger.create(
+                [
+                    {
+                        account: toUserAccount._id,
+                        type: "credit",
+                        amount,
+                        transaction: transaction._id
+                    }
+                ],
+                { session }
+            );
+
+            transaction.status = "success";
+            await transaction.save({ session });
+
+            await session.commitTransaction();
+            session.endSession();
+
+            await sendTransactionEmail(toUserAccount.user.email, toUserAccount.user.name, transaction._id);
+        } 
+        catch (error) {
+            if (session) {
+                await session.abortTransaction();
+                session.endSession();
+            }
+            console.error("Error creating transaction:", error);
+            return res.status(500).json({
+                success: false,
+                message: error.message || "Internal server error while creating transaction"
+            });
+        }
+    }
+    catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: error.message || "Internal server error while creating transaction"
+        });
+    }
+};
+
+export default { createTransaction,createInitialFundsTransaction };

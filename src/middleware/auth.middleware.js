@@ -36,4 +36,43 @@ const authMiddleware = async (req, res, next) => {
     }
 };
 
-export { authMiddleware };
+// middleware to check if user is system user
+const authSystemMiddleware = async (req,res,next) =>{
+    try {
+        const token = req.cookies || req.headers.authorization.split(" ")[1];
+        
+        if(!token){
+            return res.status(401).json({
+                success: false,
+                message: "Not authorized, no token provided"
+            });
+        }
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const user = await User.findById(decoded._id).select("-password").select("+systemUser");
+        
+        if(!user){
+            return res.status(401).json({
+                success: false,
+                message: "User not found or invalid token"
+            });
+        }
+        
+        if(!user.systemUser){
+            return res.status(401).json({
+                success: false,
+                message: "Not authorized, user is not system user"
+            });
+        }
+        
+        req.user = user;
+        next();
+    } 
+    catch (error) {
+        return res.status(401).json({
+            success: false,
+            message: error.message || "Not authorized, system user check failed"
+        });
+    }
+}
+
+export { authMiddleware,authSystemMiddleware };

@@ -23,11 +23,12 @@ const userSchema = new mongoose.Schema({
         trim: true,
         minlength: [6, "Password must be at least 6 characters long"]
     },
-    role:{
-        type: String,
-        enum:["admin","user"],
-        default: "user",
-    },
+    systemUser:{
+        type: Boolean,
+        default: false,
+        immutable: true,
+        select: false
+    }
 },{timestamps:true})
 
 userSchema.pre("save", async function () {

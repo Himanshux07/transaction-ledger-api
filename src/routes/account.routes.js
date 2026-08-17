@@ -6,5 +6,8 @@ const router = express.Router();
 
 router.post("/", authMiddleware, accountController.createAccount);
 router.get("/", authMiddleware, accountController.getAccount);
+// get balance of specific account id
+router.get("/balance/:accountId",authMiddleware,accountController.getAccountBalance)
 
-export default router;
+
+export default router;
