@@ -1,5 +1,6 @@
 import User from "../models/user.models.js";
 import { sendRegistrationEmail } from "../services/email.js";
+import TokenBlackList from "../models/blackList.models.js";
 
 const cookieOptions = {
     httpOnly: true,
@@ -124,17 +125,24 @@ const login = async (req, res) => {
 
 const logout = async (req, res) => {
     try {
-        res.status(200)
-            .clearCookie("token", {
-                httpOnly: true,
-                secure: process.env.NODE_ENV === "production",
-                sameSite: "strict"
-            })
-            .json({
-                success: true,
+        const token = req.cookies.token || req.headers.authorization?.split(" ")[1];
+
+        if(!token){
+            return res.status(401).json({
+                success: false,
+                message: "Unauthorized"
+            });
+        }
+
+        await TokenBlackList.create({
+            token
+        });
+        
+        return res.clearCookie("token").json({
                 message: "Logged out successfully"
             });
-    } catch (error) {
+    }
+    catch (error) {
         res.status(500).json({
             success: false,
             message: error.message || "Error logging out"
