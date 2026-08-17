@@ -91,55 +91,69 @@ const createTransaction = async (req, res) => {
         }
 
         /*
-            5. Create transaction & ledger entries in a database session
+            5. Create pending transaction OUTSIDE session so retries can see it
         */
-        session = await mongoose.startSession();
-        session.startTransaction();
+        const transaction = await Transaction.create({
+            fromAccount,
+            toAccount,
+            amount,
+            idempotencyKey,
+            status: "pending"
+        });
 
-        const [transaction] = await Transaction.create(
-            [
-                {
-                    fromAccount,
-                    toAccount,
-                    amount,
-                    idempotencyKey,
-                    status: "pending"
-                }
-            ],
-            { session }
-        );
+        /*
+            6. Create ledger entries & finalize inside a database session
+        */
+        try {
+            session = await mongoose.startSession();
+            session.startTransaction();
 
-        await Ledger.create(
-            [
-                {
-                    account: fromAccount,
-                    type: "debit",
-                    amount,
-                    balance: balance - amount,
-                    transaction: transaction._id
-                }
-            ],
-            { session }
-        );
+            await Ledger.create(
+                [
+                    {
+                        account: fromAccount,
+                        type: "debit",
+                        amount,
+                        balance: balance - amount,
+                        transaction: transaction._id
+                    }
+                ],
+                { session }
+            );
 
-        await Ledger.create(
-            [
-                {
-                    account: toAccount,
-                    type: "credit",
-                    amount,
-                    balance: balance + amount,
-                    transaction: transaction._id
-                }
-            ],
-            { session }
-        );
+            await Ledger.create(
+                [
+                    {
+                        account: toAccount,
+                        type: "credit",
+                        amount,
+                        balance: balance + amount,
+                        transaction: transaction._id
+                    }
+                ],
+                { session }
+            );
 
-        transaction.status = "success";
-        await transaction.save({ session });
+            transaction.status = "success";
+            await transaction.save({ session });
 
-        await session.commitTransaction();
-        session.endSession();
+            await session.commitTransaction();
+            session.endSession();
+        }
+        catch (sessionError) {
+            if (session) {
+                await session.abortTransaction();
+                session.endSession();
+            }
+            // Mark transaction as failed so retries know it didn't go through
+            transaction.status = "failed";
+            await transaction.save();
+            console.error("Session error during transaction:", sessionError);
+            return res.status(500).json({
+                success: false,
+                message: "Transaction failed during processing"
+            });
+        }
 
         /*
             6. Send email notifications safely
@@ -186,6 +200,37 @@ const createInitialFundsTransaction = async (req, res) => {
                 message: "All fields are required"
             });
         }
+
+        // Idempotency check — return existing transaction if already processed
+        const existTransaction = await Transaction.findOne({ idempotencyKey });
+        if (existTransaction) {
+            if (existTransaction.status === "success") {
+                return res.status(409).json({
+                    success: false,
+                    message: "Transaction already processed successfully",
+                    transaction: existTransaction
+                });
+            }
+            if (existTransaction.status === "pending") {
+                return res.status(200).json({
+                    success: true,
+                    message: "Transaction is still processing"
+                });
+            }
+            if (existTransaction.status === "failed") {
+                return res.status(400).json({
+                    success: false,
+                    message: "Transaction has failed"
+                });
+            }
+            if (existTransaction.status === "reversed") {
+                return res.status(409).json({
+                    success: false,
+                    message: "Transaction has been reversed"
+                });
+            }
+        }
+
         const toUserAccount = await Account.findOne({_id : toAccount})
 
         if(!toUserAccount){
@@ -205,22 +250,18 @@ const createInitialFundsTransaction = async (req, res) => {
             });
         }
 
+        // Create pending transaction OUTSIDE session so retries can see it
+        const transaction = await Transaction.create({
+            fromAccount: fromUserAccount._id,
+            toAccount: toUserAccount._id,
+            amount,
+            idempotencyKey,
+            status: "pending"
+        });
+
         try {
             session = await mongoose.startSession();
             session.startTransaction();
-
-            const [transaction] = await Transaction.create(
-                [
-                    {
-                        fromAccount: fromUserAccount._id,
-                        toAccount: toUserAccount._id,
-                        amount,
-                        idempotencyKey,
-                        status: "pending"
-                    }
-                ],
-                { session }
-            );
 
             await Ledger.create(
                 [
@@ -228,6 +269,7 @@ const createInitialFundsTransaction = async (req, res) => {
                         account: fromUserAccount._id,
                         type: "debit",
                         amount,
+                        balance: 0,
                         transaction: transaction._id
                     }
                 ],
@@ -240,6 +282,7 @@ const createInitialFundsTransaction = async (req, res) => {
                         account: toUserAccount._id,
                         type: "credit",
                         amount,
+                        balance: amount,
                         transaction: transaction._id
                     }
                 ],
@@ -254,15 +297,18 @@ const createInitialFundsTransaction = async (req, res) => {
 
             await sendTransactionEmail(toUserAccount.user.email, toUserAccount.user.name, transaction._id);
         } 
-        catch (error) {
+        catch (sessionError) {
             if (session) {
                 await session.abortTransaction();
                 session.endSession();
             }
-            console.error("Error creating transaction:", error);
+            // Mark transaction as failed so retries know it didn't go through
+            transaction.status = "failed";
+            await transaction.save();
+            console.error("Session error during initial fund transaction:", sessionError);
             return res.status(500).json({
                 success: false,
-                message: error.message || "Internal server error while creating transaction"
+                message: "Transaction failed during processing"
             });
         }
     }
