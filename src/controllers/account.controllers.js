@@ -64,13 +64,14 @@ const getAccountBalance = async (req, res) =>{
                 message: "Account not found"
             });
         }
-        const balance = await account.getAccountBalance();
-
+        const balance = await account.getBalance();
 
         return res.status(200).json({
             success: true,
             message: "Account balance fetched successfully",
-            data: balance
+            data: {
+                balance
+            }
         });
     } 
     catch (error) {
