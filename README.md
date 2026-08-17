@@ -2,113 +2,110 @@
 
 [![Node.js Version](https://img.shields.io/badge/Node.js-v18%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![Express.js](https://img.shields.io/badge/Express-v5.x-000000?logo=express&logoColor=white)](https://expressjs.com/)
-[![MongoDB](https://img.shields.io/badge/MongoDB-v6%2B-47A248?logo=mongodb&logoColor=white)](https://www.mongodb.com/)
-[![Mongoose](https://img.shields.io/badge/Mongoose-v9.x-880000?logo=mongoose&logoColor=white)](https://mongoosejs.com/)
+[![MongoDB](https://img.shields.io/badge/MongoDB-Mongoose%20v9.x-47A248?logo=mongodb&logoColor=white)](https://www.mongodb.com/)
 [![JWT Auth](https://img.shields.io/badge/JWT-Protected-000000?logo=jsonwebtokens&logoColor=white)](https://jwt.io/)
+[![Nodemailer](https://img.shields.io/badge/Nodemailer-OAuth2-007ACC?logo=gmail&logoColor=white)](https://nodemailer.com/)
 
-> **Enterprise-Grade, ACID-Compliant Double-Entry Ledger & Transaction Management Engine.**  
-> Designed for high-integrity financial operations with strict immutability guarantees, idempotency protection, dynamic balance aggregation, and automated asynchronous email notifications.
+> **ACID-Compliant Double-Entry Ledger & Financial Transaction Management REST API.**  
+> Built with Node.js, Express, MongoDB (Mongoose), JWT authentication with token blacklisting, and Nodemailer email alerts.
 
 ---
 
 ## 📑 Table of Contents
 
 - [Overview](#-overview)
-- [Key Architectural Highlights](#-key-architectural-highlights)
+- [Core Features](#-core-features)
 - [System Architecture & Flow](#-system-architecture--flow)
 - [Database Schema Design](#-database-schema-design)
 - [API Reference](#-api-reference)
-  - [Authentication & User Management](#1-authentication--user-management)
-  - [Account Management](#2-account-management)
-  - [Transactions & Ledger Operations](#3-transactions--ledger-operations)
+  - [1. User Authentication (`/api/users`)](#1-user-authentication-apiusers)
+  - [2. Account Management (`/api/accounts`)](#2-account-management-apiaccounts)
+  - [3. Transaction Operations (`/api/transactions`)](#3-transaction-operations-apitransactions)
 - [Idempotency & Concurrency Model](#-idempotency--concurrency-model)
-- [Project Directory Structure](#-project-directory-structure)
+- [Directory Structure](#-directory-structure)
 - [Getting Started](#-getting-started)
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
   - [Environment Configuration](#environment-configuration)
-  - [Running the Server](#running-the-server)
-- [Security & Integrity Protections](#-security--integrity-protections)
+  - [Running the Application](#running-the-application)
+- [Security & Integrity Measures](#-security--integrity-measures)
 
 ---
 
 ## 📖 Overview
 
-The **Transaction Ledger API** is a robust financial backend service engineered to address the critical challenges of distributed money movement: **double-spending**, **data inconsistency**, **duplicate charge execution**, and **ledger tampering**.
+The **Transaction Ledger API** is a financial transaction backend engineered to guarantee data consistency, prevent double-spending, enforce request idempotency, and maintain an immutable ledger audit trail.
 
-Built on a strict **Double-Entry Bookkeeping** paradigm, every financial event creates equal and offsetting debit and credit entries in an immutable ledger. Multi-document ACID transactions guarantee that account balances remain mathematically consistent across concurrent transfers.
+All transfers adhere to the **Double-Entry Bookkeeping** principle: every transaction simultaneously writes equal debit and credit records within a single atomic MongoDB multi-document session.
 
 ---
 
-## 🌟 Key Architectural Highlights
+## ⚡ Core Features
 
-- **🔒 Immutable Double-Entry Ledger**:
-  All ledger entries are write-only. Mongoose middleware blocks any update (`updateOne`, `findOneAndUpdate`, etc.) or delete (`deleteOne`, `deleteMany`, etc.) operations at runtime to ensure an audit-proof ledger.
-
-- **⚛️ ACID Multi-Document Transactions**:
-  Money transfers use MongoDB atomic sessions (`startSession`, `startTransaction`, `commitTransaction`, `abortTransaction`). If any step fails (e.g. debit succeeds but credit fails), the entire transaction rolls back automatically.
-
-- **⚡ Strict Idempotency Controls**:
-  Every transaction request requires a unique `idempotencyKey`. The API tracks state transitions (`pending` ➔ `success` / `failed` / `reversed`), eliminating duplicate charges caused by network timeouts or aggressive client retries.
-
-- **📊 Dynamic Balance Aggregation**:
-  Account balances are not stored as mutable scalar values prone to race conditions. Instead, balances are derived dynamically using MongoDB aggregation pipelines:  
-  $$\text{Account Balance} = \sum \text{Credits} - \sum \text{Debits}$$
-
-- **🔐 Dual-Layer Authentication & Authorization**:
-  - Secure JWT session handling through both HTTP-only cookies and standard `Authorization: Bearer <token>` headers.
-  - Role-based isolation with dedicated middleware for privileged `systemUser` operations (e.g. initial liquidity injection).
-
-- **✉️ Automated Transaction Emails**:
-  Built-in integration with Google OAuth2 Nodemailer service to asynchronously dispatch transactional alerts (account welcome, transfer success, transfer failure, and transaction reversals).
+- **Double-Entry Bookkeeping Ledger**: Every money movement creates linked `debit` and `credit` records in the `Ledger` collection.
+- **Ledger Immutability Guards**: Mongoose pre-hooks block all update and delete actions on the `Ledger` model (`updateOne`, `updateMany`, `findOneAndUpdate`, `findByIdAndUpdate`, `deleteOne`, `deleteMany`, `findOneAndDelete`, `findOneAndReplace`, `remove`).
+- **ACID Database Transactions**: Multi-document atomic transactions via Mongoose sessions (`startSession`, `startTransaction`, `commitTransaction`, `abortTransaction`) guarantee that either both debit and credit succeed or the transaction rolls back completely.
+- **Enforced Idempotency**: All transfer requests require a unique `idempotencyKey`. The system checks existing keys to prevent duplicate execution across retries and race conditions.
+- **Dynamic Balance Aggregation**: Balances are calculated dynamically via a MongoDB aggregation pipeline over ledger entries ($\text{Total Credits} - \text{Total Debits}$) rather than relying on mutable balance fields.
+- **Authentication & JWT Blacklisting**:
+  - Passwords hashed with `bcrypt` (salt rounds = 10).
+  - JWT tokens delivered via HTTP-only cookies and `Authorization: Bearer <token>` headers.
+  - Logging out invalidates the active token by adding it to the `tokenBlackList` collection.
+  - Role-based authorization guard (`systemUser`) for privileged administrative actions.
+- **Automated Email Notifications**: Asynchronous email delivery for user registration and transaction confirmation via Nodemailer configured with Google OAuth2.
 
 ---
 
 ## 🏛 System Architecture & Flow
 
-### 1. Transfer Lifecycle & Idempotency Pipeline
+### Transaction Processing Lifecycle
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Client
     participant Auth as Auth Middleware
+    participant Blacklist as Token Blacklist DB
     participant Controller as Transaction Controller
     participant DB as MongoDB (ACID Session)
-    participant Email as Email Service (OAuth2)
+    participant Email as Nodemailer (OAuth2)
 
-    Client->>Auth: POST /api/transactions (Bearer Token / Cookie)
-    Auth->>Auth: Verify JWT & Attach user
+    Client->>Auth: POST /api/transactions (Token + Payload)
+    Auth->>Blacklist: Check if token is blacklisted
+    alt Token Blacklisted
+        Auth-->>Client: 401 Unauthorized ("Not authorized, token is blacklisted")
+    end
+    Auth->>Auth: Verify JWT & Attach req.user
     Auth->>Controller: Forward authenticated request
-    
-    Controller->>DB: Check idempotencyKey & Account Validity
-    alt Duplicate / Existing Idempotency Key
-        Controller-->>Client: Return existing status (409 Conflict / 200 Processing)
+
+    Controller->>DB: Validate accounts & check idempotencyKey
+    alt Idempotency Key Exists
+        Controller-->>Client: Return status (409 Conflict / 200 Processing / 400 Failed)
     end
 
-    Controller->>DB: Calculate current balance via aggregation
-    alt Insufficient Balance (balance < amount)
-        Controller-->>Client: 400 Bad Request (Insufficient Balance)
+    Controller->>DB: Calculate balance via account.getBalance()
+    alt Balance < Amount
+        Controller-->>Client: 400 Bad Request ("Insufficient balance")
     end
 
     Controller->>DB: Create Transaction record (status: 'pending')
     
     rect rgb(240, 248, 255)
-        Note over Controller,DB: ACID Transaction Block
+        Note over Controller,DB: MongoDB ACID Transaction Session
         Controller->>DB: Start Session & Transaction
-        Controller->>DB: Insert Ledger Entry: DEBIT from fromAccount
-        Controller->>DB: Insert Ledger Entry: CREDIT to toAccount
+        Controller->>DB: Create Ledger DEBIT entry for fromAccount
+        Controller->>DB: Create Ledger CREDIT entry for toAccount
         Controller->>DB: Update Transaction status = 'success'
-        Controller->>DB: Commit Transaction & End Session
+        Controller->>DB: Commit Session
     end
 
-    opt Session Error / Failure
-        Controller->>DB: Abort Transaction & Mark Transaction 'failed'
-        Controller-->>Client: 500 Internal Error (Transaction Failed)
+    opt Session Fails
+        Controller->>DB: Abort Session & Set Transaction status = 'failed'
+        Controller-->>Client: 500 Internal Server Error
     end
 
-    Controller->>Email: Async dispatch transaction confirmation
-    Controller-->>Client: 200 OK (Transaction Success payload)
+    Controller->>Email: Send transaction email (Async)
+    Controller-->>Client: 200 OK (Transaction details)
 ```
 
 ---
@@ -120,21 +117,22 @@ erDiagram
     USER ||--o{ ACCOUNT : owns
     ACCOUNT ||--o{ LEDGER : tracks
     TRANSACTION ||--|{ LEDGER : generates
+    USER ||--o{ TOKEN_BLACKLIST : invalidates
 
     USER {
         ObjectId _id PK
-        string name
-        string email UK
-        string password "Hashed with bcrypt"
-        boolean systemUser "Immutable, default: false"
+        string name "Required, trim, lowercase"
+        string email UK "Required, trim, lowercase, unique"
+        string password "Required, bcrypt hashed"
+        boolean systemUser "Default: false, immutable, select: false"
         date createdAt
         date updatedAt
     }
 
     ACCOUNT {
         ObjectId _id PK
-        ObjectId user FK
-        string status "active | frozen | closed"
+        ObjectId user FK "Required, Indexed"
+        string status "active | frozen | closed, Default: active"
         string currency "Default: INR"
         date createdAt
         date updatedAt
@@ -142,23 +140,31 @@ erDiagram
 
     TRANSACTION {
         ObjectId _id PK
-        ObjectId fromAccount FK
-        ObjectId toAccount FK
-        number amount "min: 0"
-        string status "pending | success | failed | reversed"
-        string idempotencyKey UK "Indexed"
+        ObjectId fromAccount FK "Required, Indexed"
+        ObjectId toAccount FK "Required, Indexed"
+        number amount "Required, min: 0"
+        string status "pending | success | failed | reversed, Default: pending"
+        string idempotencyKey UK "Required, Unique, Indexed"
         date createdAt
         date updatedAt
     }
 
     LEDGER {
         ObjectId _id PK
-        ObjectId account FK "Immutable"
-        ObjectId transaction FK "Immutable"
-        string type "debit | credit (Immutable)"
-        number amount "Immutable"
-        number balance "Balance snapshot (Immutable)"
+        ObjectId account FK "Required, Indexed, Immutable"
+        ObjectId transaction FK "Required, Immutable"
+        string type "debit | credit, Required, Immutable"
+        number amount "Required, min: 0, Immutable"
+        number balance "Required, Immutable"
         date createdAt
+        date updatedAt
+    }
+
+    TOKEN_BLACKLIST {
+        ObjectId _id PK
+        string token UK "Required, Unique"
+        date createdAt "Indexed"
+        date updatedAt
     }
 ```
 
@@ -168,19 +174,19 @@ erDiagram
 
 Base URL: `http://localhost:3000/api`
 
-### 1. Authentication & User Management
+### 1. User Authentication (`/api/users`)
 
 #### 🔹 Register User
-Creates a new user profile, sets an HTTP-only JWT cookie, and triggers a welcome email.
+Creates a new user account, returns a JWT token, sets an HTTP-only cookie, and sends a welcome email.
 
-- **Endpoint**: `POST /api/users/register`
-- **Auth Required**: No
-- **Request Body**:
+- **URL**: `POST /api/users/register`
+- **Auth**: None
+- **Body**:
   ```json
   {
-    "name": "Jane Doe",
-    "email": "jane@example.com",
-    "password": "StrongPassword123!"
+    "name": "John Doe",
+    "email": "john@example.com",
+    "password": "password123"
   }
   ```
 - **Responses**:
@@ -191,27 +197,27 @@ Creates a new user profile, sets an HTTP-only JWT cookie, and triggers a welcome
       "message": "User registered successfully",
       "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6...",
       "data": {
-        "_id": "66bf04a9e2...",
-        "name": "jane doe",
-        "email": "jane@example.com",
+        "_id": "66bf04a9e2b5c12345678901",
+        "name": "john doe",
+        "email": "john@example.com",
         "createdAt": "2026-08-17T18:00:00.000Z"
       }
     }
     ```
-  - `400 Bad Request`: Validation failure or duplicate email.
+  - `400 Bad Request`: Missing fields or user already exists.
 
 ---
 
 #### 🔹 Login User
-Authenticates user credentials and issues a JWT token via cookie and response payload.
+Authenticates user credentials and returns a JWT token via cookie and response.
 
-- **Endpoint**: `POST /api/users/login`
-- **Auth Required**: No
-- **Request Body**:
+- **URL**: `POST /api/users/login`
+- **Auth**: None
+- **Body**:
   ```json
   {
-    "email": "jane@example.com",
-    "password": "StrongPassword123!"
+    "email": "john@example.com",
+    "password": "password123"
   }
   ```
 - **Responses**:
@@ -222,9 +228,9 @@ Authenticates user credentials and issues a JWT token via cookie and response pa
       "message": "Logged in successfully",
       "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6...",
       "data": {
-        "_id": "66bf04a9e2...",
-        "name": "jane doe",
-        "email": "jane@example.com"
+        "_id": "66bf04a9e2b5c12345678901",
+        "name": "john doe",
+        "email": "john@example.com"
       }
     }
     ```
@@ -233,29 +239,29 @@ Authenticates user credentials and issues a JWT token via cookie and response pa
 ---
 
 #### 🔹 Logout User
-Clears the session cookie.
+Invalidates the current JWT token by saving it to the `tokenBlackList` collection and clearing the auth cookie.
 
-- **Endpoint**: `POST /api/users/logout`
-- **Auth Required**: Yes (`authMiddleware`)
+- **URL**: `POST /api/users/logout`
+- **Auth**: Required (`authMiddleware`)
+- **Headers**: `Authorization: Bearer <token>` or HTTP-only cookie
 - **Responses**:
   - `200 OK`
     ```json
     {
-      "success": true,
       "message": "Logged out successfully"
     }
     ```
+  - `401 Unauthorized`: No token provided or token blacklisted.
 
 ---
 
-### 2. Account Management
+### 2. Account Management (`/api/accounts`)
 
 #### 🔹 Create Account
-Initializes a new ledger account associated with the authenticated user.
+Creates a new financial account associated with the authenticated user.
 
-- **Endpoint**: `POST /api/accounts`
-- **Auth Required**: Yes
-- **Headers**: `Authorization: Bearer <token>` *(or Cookie)*
+- **URL**: `POST /api/accounts`
+- **Auth**: Required (`authMiddleware`)
 - **Responses**:
   - `201 Created`
     ```json
@@ -263,8 +269,8 @@ Initializes a new ledger account associated with the authenticated user.
       "success": true,
       "message": "Account created successfully",
       "data": {
-        "_id": "66bf0581e2b5...",
-        "user": "66bf04a9e2...",
+        "_id": "66bf0581e2b5c12345678902",
+        "user": "66bf04a9e2b5c12345678901",
         "status": "active",
         "currency": "INR",
         "createdAt": "2026-08-17T18:05:00.000Z",
@@ -276,10 +282,10 @@ Initializes a new ledger account associated with the authenticated user.
 ---
 
 #### 🔹 Get User Accounts
-Retrieves all accounts belonging to the authenticated user.
+Retrieves all accounts owned by the authenticated user.
 
-- **Endpoint**: `GET /api/accounts`
-- **Auth Required**: Yes
+- **URL**: `GET /api/accounts`
+- **Auth**: Required (`authMiddleware`)
 - **Responses**:
   - `200 OK`
     ```json
@@ -288,8 +294,8 @@ Retrieves all accounts belonging to the authenticated user.
       "message": "Accounts fetched successfully",
       "data": [
         {
-          "_id": "66bf0581e2b5...",
-          "user": "66bf04a9e2...",
+          "_id": "66bf0581e2b5c12345678902",
+          "user": "66bf04a9e2b5c12345678901",
           "status": "active",
           "currency": "INR",
           "createdAt": "2026-08-17T18:05:00.000Z"
@@ -301,11 +307,11 @@ Retrieves all accounts belonging to the authenticated user.
 ---
 
 #### 🔹 Get Account Balance
-Computes and returns the real-time aggregated balance of a specific account owned by the user.
+Computes dynamic balance ($\sum \text{Credits} - \sum \text{Debits}$) from ledger entries for a specific account.
 
-- **Endpoint**: `GET /api/accounts/balance/:accountId`
-- **Auth Required**: Yes
-- **URL Parameters**: `accountId` (MongoDB ObjectId)
+- **URL**: `GET /api/accounts/balance/:accountId`
+- **Auth**: Required (`authMiddleware`)
+- **Params**: `accountId` (MongoDB ObjectId)
 - **Responses**:
   - `200 OK`
     ```json
@@ -313,115 +319,117 @@ Computes and returns the real-time aggregated balance of a specific account owne
       "success": true,
       "message": "Account balance fetched successfully",
       "data": {
-        "balance": 25000
+        "balance": 15000
       }
     }
     ```
-  - `404 Not Found`: Account does not exist or does not belong to the user.
+  - `404 Not Found`: Account ID missing, account not found, or not owned by user.
 
 ---
 
-### 3. Transactions & Ledger Operations
+### 3. Transaction Operations (`/api/transactions`)
 
-#### 🔹 Execute Fund Transfer (Peer-to-Peer)
-Executes an atomic transfer between two active accounts with full double-entry ledger bookkeeping.
+#### 🔹 Create Transaction (Peer-to-Peer Transfer)
+Performs an atomic money transfer between two active accounts and generates corresponding double-entry ledger records.
 
-- **Endpoint**: `POST /api/transactions`
-- **Auth Required**: Yes
-- **Request Body**:
+- **URL**: `POST /api/transactions`
+- **Auth**: Required (`authMiddleware`)
+- **Body**:
   ```json
   {
-    "fromAccount": "66bf0581e2b5c123456789aa",
-    "toAccount": "66bf0595e2b5c123456789bb",
-    "amount": 5000,
-    "idempotencyKey": "tx_req_9876543210_abcdef"
+    "fromAccount": "66bf0581e2b5c12345678902",
+    "toAccount": "66bf0595e2b5c12345678903",
+    "amount": 2500,
+    "idempotencyKey": "unique-tx-key-12345"
   }
   ```
 - **Responses**:
-  - `200 OK` (Transfer Success)
+  - `200 OK`
     ```json
     {
       "success": true,
       "message": "Transaction created successfully",
       "transaction": {
-        "_id": "66bf0631e2b5c123456789cc",
-        "fromAccount": "66bf0581e2b5c123456789aa",
-        "toAccount": "66bf0595e2b5c123456789bb",
-        "amount": 5000,
+        "_id": "66bf0631e2b5c12345678904",
+        "fromAccount": "66bf0581e2b5c12345678902",
+        "toAccount": "66bf0595e2b5c12345678903",
+        "amount": 2500,
         "status": "success",
-        "idempotencyKey": "tx_req_9876543210_abcdef",
-        "createdAt": "2026-08-17T18:10:00.000Z"
+        "idempotencyKey": "unique-tx-key-12345",
+        "createdAt": "2026-08-17T18:10:00.000Z",
+        "updatedAt": "2026-08-17T18:10:00.000Z"
       }
     }
     ```
-  - `400 Bad Request`: Insufficient funds, inactive account, or missing fields.
-  - `409 Conflict`: Idempotency collision (transaction already completed or reversed).
+  - `400 Bad Request`: Insufficient balance, inactive accounts, or missing fields.
+  - `404 Not Found`: Invalid source or destination account.
+  - `409 Conflict`: Idempotency key already processed (`success` or `reversed`).
 
 ---
 
-#### 🔹 Initial Funds Injection (System Superuser Only)
-Allows authorized system administrators (`systemUser: true`) to seed liquidity or initial balance into a user account.
+#### 🔹 Initial Funds Deposit (`systemUser` Only)
+Allows a system user (`systemUser: true`) to seed liquidity into a user's account.
 
-- **Endpoint**: `POST /api/transactions/system/initialifund`
-- **Auth Required**: Yes (`authSystemMiddleware`)
-- **Request Body**:
+- **URL**: `POST /api/transactions/system/initialifund`
+- **Auth**: Required (`authSystemMiddleware`)
+- **Body**:
   ```json
   {
-    "toAccount": "66bf0581e2b5c123456789aa",
-    "amount": 100000,
-    "idempotencyKey": "sys_seed_0001_xyz"
+    "toAccount": "66bf0581e2b5c12345678902",
+    "amount": 50000,
+    "idempotencyKey": "sys-seed-key-0001"
   }
   ```
 - **Responses**:
-  - `200 OK` / `201 Created`
-  - `401 Unauthorized`: Calling user is not a verified `systemUser`.
+  - `200 OK` (Funds seeded, transaction completed)
+  - `401 Unauthorized`: Calling user is not a verified `systemUser` or token is blacklisted.
+  - `404 Not Found`: Account not found.
 
 ---
 
 ## 🛡️ Idempotency & Concurrency Model
 
-In distributed financial architectures, client retries or network timeouts can easily cause accidental double charges. This API solves this via a resilient multi-stage pattern:
-
-1. **Unique Idempotency Index**: An enforced unique index on `Transaction.idempotencyKey`.
-2. **State Inspection**:
-   - `success`: Returns `409 Conflict` containing the original transaction record.
-   - `pending`: Returns `200 OK` indicating in-flight processing.
-   - `failed`: Returns `400 Bad Request` enabling the client to generate a new key and retry.
-   - `reversed`: Returns `409 Conflict`.
-3. **Optimistic Pre-allocation**: Transactions are created with `pending` status before beginning the ACID database transaction, ensuring parallel concurrent requests with the identical key are immediately caught.
+1. **Unique Key Indexing**: `Transaction.idempotencyKey` has a unique database index.
+2. **State Status Handling**:
+   - `success`: Returns `409 Conflict` with the existing transaction data.
+   - `pending`: Returns `200 OK` with `"Transaction is still processing"`.
+   - `failed`: Returns `400 Bad Request` with `"Transaction has failed"`.
+   - `reversed`: Returns `409 Conflict` with `"Transaction has been reversed"`.
+3. **Optimistic Staging**: The transaction document is inserted with `status: "pending"` before starting the database transaction session, preventing concurrent duplicate requests.
 
 ---
 
-## 📂 Project Directory Structure
+## 📁 Directory Structure
 
 ```plaintext
 transaction-ledger-api/
-├── .env.example                # Sample environment variables configuration
-├── .gitignore                  # Git ignore rules
-├── package.json                # Project dependencies & scripts
-├── server.js                   # Application entrypoint & DB connection bootstrap
-├── README.md                   # Comprehensive project documentation
+├── .env.example                     # Environment variables template
+├── .gitignore                       # Git ignore patterns
+├── package.json                     # Dependencies and scripts
+├── server.js                        # App entry point and DB connection startup
+├── README.md                        # Project documentation
 └── src/
-    ├── app.js                  # Express application setup, routes & middleware mounting
+    ├── app.js                       # Express app configuration & route registration
     ├── config/
-    │   └── db.js               # MongoDB connection logic (Mongoose)
+    │   └── db.js                    # Mongoose MongoDB connection helper
     ├── controllers/
-    │   ├── account.controllers.js       # Account creation & balance aggregation logic
-    │   ├── transaction.controllers.js   # Transaction processing, ACID sessions & ledgering
-    │   └── user.controllers.js          # Authentication (register, login, logout)
+    │   ├── account.controllers.js    # Account creation & balance queries
+    │   ├── transaction.controllers.js# Atomic transactions & ledger generation
+    │   └── user.controllers.js       # Register, login, logout & token blacklisting
     ├── middleware/
-    │   └── auth.middleware.js           # JWT verification & systemUser guards
+    │   └── auth.middleware.js        # authMiddleware & authSystemMiddleware
     ├── models/
-    │   ├── account.models.js            # Account schema & balance aggregation methods
-    │   ├── ledger.models.js             # Immutable double-entry ledger schema
-    │   ├── transaction.models.js        # Transaction schema & idempotency indexes
-    │   └── user.models.js               # User schema, password hashing & JWT token generator
+    │   ├── account.models.js         # Account schema with getBalance() aggregation
+    │   ├── blackList.models.js       # Token blacklist schema
+    │   ├── ledger.models.js          # Immutable double-entry ledger schema
+    │   ├── transaction.models.js     # Transaction schema with idempotency key
+    │   └── user.models.js            # User schema with bcrypt & token generation
     ├── routes/
-    │   ├── account.routes.js            # Account routing definitions
-    │   ├── transaction.routes.js        # Transaction routing definitions
-    │   └── user.routes.js               # User authentication routing definitions
+    │   ├── account.routes.js         # /api/accounts routes
+    │   ├── transaction.routes.js     # /api/transactions routes
+    │   └── user.routes.js            # /api/users routes
     └── services/
-        └── email.js                     # Nodemailer OAuth2 client & email dispatch templates
+        └── email.js                  # Nodemailer OAuth2 email service
 ```
 
 ---
@@ -431,86 +439,64 @@ transaction-ledger-api/
 ### Prerequisites
 
 - **Node.js**: v18.0.0 or higher
-- **npm** or **yarn**
-- **MongoDB**: v6.0+ (MongoDB Atlas or a local **Replica Set** is required to support multi-document transactions)
-- **Google Cloud Console Credentials**: OAuth2 Client ID & Refresh Token (for transactional emails)
+- **MongoDB**: v6.0+ (MongoDB Atlas or a local replica set is required for multi-document ACID transactions)
+- **Google OAuth2 Credentials**: Client ID, Client Secret, and Refresh Token (for Nodemailer)
 
 ### Installation
 
-1. **Clone the Repository**:
+1. **Clone the repository**:
    ```bash
    git clone https://github.com/Himanshux07/transaction-ledger-api.git
    cd transaction-ledger-api
    ```
 
-2. **Install Dependencies**:
+2. **Install dependencies**:
    ```bash
    npm install
    ```
 
 ### Environment Configuration
 
-Create a `.env` file in the root directory by copying the example:
-
-```bash
-cp .env.example .env
-```
-
-Populate the required environment variables:
+Create a `.env` file in the root directory:
 
 ```env
-# Server
-PORT=3000
-NODE_ENV=development
+# MongoDB Connection String (Replica Set / MongoDB Atlas)
+MONGO_URI=mongodb+srv://<username>:<password>@cluster0.example.mongodb.net/transaction-ledger
 
-# Database (Replica set connection URI)
-MONGO_URI=mongodb+srv://<username>:<password>@cluster0.mongodb.net/transaction-ledger?retryWrites=true&w=majority
-
-# Authentication
-JWT_SECRET=your_jwt_secret_key_change_in_production
+# JWT Configuration
+JWT_SECRET=your_secret_jwt_key
 JWT_EXPIRES_IN=7d
 
-# Google OAuth2 for Email Notifications
+# Google OAuth2 Email Credentials (Nodemailer)
 EMAIL_USER=your_email@gmail.com
-CLIENT_ID=your_google_client_id.apps.googleusercontent.com
-CLIENT_SECRET=your_google_client_secret
-REFRESH_TOKEN=your_google_oauth_refresh_token
+CLIENT_ID=your_client_id.apps.googleusercontent.com
+CLIENT_SECRET=your_client_secret
+REFRESH_TOKEN=your_oauth2_refresh_token
 ```
 
-### Running the Server
+### Running the Application
 
-#### Development Mode (with Hot Reloading via Nodemon):
-```bash
-npm run dev
-```
+- **Development Mode** (with automatic restart via nodemon):
+  ```bash
+  npm run dev
+  ```
 
-#### Production Mode:
-```bash
-npm start
-```
+- **Production Mode**:
+  ```bash
+  npm start
+  ```
 
-The server will start listening on port `3000` (or `process.env.PORT`):
-```plaintext
-Server is running on port 3000
-MongoDB connected
-Email server is ready to send messages
-```
+The server listens by default on port `3000`.
 
 ---
 
-## 🔒 Security & Integrity Protections
+## 🔒 Security & Integrity Measures
 
-| Layer | Implementation Detail |
+| Feature | Implementation |
 | :--- | :--- |
-| **Password Security** | Passwords hashed using `bcrypt` with salt rounds = 10; never stored in plaintext. |
-| **JWT Storage** | Issued via `httpOnly`, `sameSite: "strict"`, and `secure` (in production) cookies to mitigate XSS. |
-| **Query Protection** | Password field is explicitly excluded (`select: false`) in sensitive lookups. |
-| **Ledger Immutability** | Database hooks prevent any accidental or malicious `UPDATE` or `DELETE` operations on the `Ledgers` collection. |
-| **Negative Balances** | Schema-level constraints (`min: 0`) and runtime balance checks prevent overdrafts. |
-| **Atomicity** | Two-phase commit logic via MongoDB sessions ensures no partial state persists if transfer fails. |
-
----
-
-## 📄 License
-
-This project is licensed under the [ISC License](LICENSE).
+| **Password Hashing** | Pre-save hook hashes passwords using `bcrypt` with salt rounds = 10. |
+| **JWT Revocation** | Tokens are stored in [`tokenBlackList`](file:///c:/Users/Himan/OneDrive/1.Resource/MERN/transaction-ledger-api/src/models/blackList.models.js) on logout and blocked on subsequent requests. |
+| **Protected Sensitive Fields** | User passwords and `systemUser` flags are excluded by default in queries (`select: false`). |
+| **Ledger Immutability** | Pre-hooks on the `Ledger` schema throw errors on any modification or deletion. |
+| **No Overdrafts** | Dynamic aggregation checks total balance before transaction execution. |
+| **Atomicity** | MongoDB multi-document transactions ensure rollback on partial execution failures. |
