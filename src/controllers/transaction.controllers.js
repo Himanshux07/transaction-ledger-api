@@ -151,7 +151,8 @@ const createTransaction = async (req, res) => {
             if (toUserAccount.user?.email) {
                 await sendTransactionEmail(toUserAccount.user.email, toUserAccount.user.name, transaction._id);
             }
-        } catch (emailErr) {
+        } 
+        catch (emailErr) {
             console.error("Failed to send transaction email:", emailErr);
         }
 
@@ -160,7 +161,8 @@ const createTransaction = async (req, res) => {
             message: "Transaction created successfully",
             transaction
         });
-    } catch (error) {
+    }
+    catch (error) {
         if (session) {
             await session.abortTransaction();
             session.endSession();
@@ -174,4 +176,3 @@ const createTransaction = async (req, res) => {
 };
 
 export default { createTransaction };
-
