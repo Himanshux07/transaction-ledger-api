@@ -6,12 +6,13 @@ import { sendTransactionEmail } from "../services/email.js";
 
 const createTransaction = async (req, res) => {
     let session;
+    let accountLocked = false;
+    const { fromAccount, toAccount, amount, idempotencyKey } = req.body;
+
     try {
         /*
             1. Validate request
         */
-        const { fromAccount, toAccount, amount, idempotencyKey } = req.body;
-
         if (!fromAccount || !toAccount || !amount || !idempotencyKey) {
             return res.status(400).json({
                 success: false,
@@ -19,14 +20,17 @@ const createTransaction = async (req, res) => {
             });
         }
 
-        // Check if the from and to accounts are valid and populate user details
-        const fromUserAccount = await Account.findById(fromAccount).populate("user");
-        const toUserAccount = await Account.findById(toAccount).populate("user");
-
-        if (!fromUserAccount || !toUserAccount) {
-            return res.status(404).json({
+        if (typeof amount !== "number" || amount <= 0) {
+            return res.status(400).json({
                 success: false,
-                message: "Invalid account"
+                message: "Amount must be a positive number"
+            });
+        }
+
+        if (fromAccount === toAccount) {
+            return res.status(400).json({
+                success: false,
+                message: "Cannot transfer funds to the same account"
             });
         }
 
@@ -62,8 +66,29 @@ const createTransaction = async (req, res) => {
             }
         }
 
+        // Check if the from and to accounts are valid and populate user details
+        const fromUserAccount = await Account.findById(fromAccount).populate("user");
+        const toUserAccount = await Account.findById(toAccount).populate("user");
+
+        if (!fromUserAccount || !toUserAccount) {
+            return res.status(404).json({
+                success: false,
+                message: "Invalid account"
+            });
+        }
+
         /*
-            3. Check Account status
+            3. Security Check: Verify caller owns the source account
+        */
+        if (fromUserAccount.user._id.toString() !== req.user._id.toString()) {
+            return res.status(403).json({
+                success: false,
+                message: "Unauthorized: You do not own the source account"
+            });
+        }
+
+        /*
+            4. Check Account status
         */
         if (fromUserAccount.status !== "active") {
             return res.status(400).json({
@@ -79,19 +104,40 @@ const createTransaction = async (req, res) => {
         }
 
         /*
-            4. Check Account balance
+            5. ATOMICALLY ACQUIRE LOCK (30-second lock with auto-expiry)
         */
-        const balance = await fromUserAccount.getBalance();
+        const now = new Date();
+        const lockExpiry = new Date(Date.now() + 30 * 1000); // 30 seconds from now
 
-        if (balance < amount) {
-            return res.status(400).json({
-                success: false,
-                message: `Insufficient balance, current balance is ${balance}. Requested amount is ${amount}`
+        const lockedAccount = await Account.findOneAndUpdate(
+            {
+                _id: fromAccount,
+                status: "active",
+                $or: [
+                    { isLocked: false },
+                    { lockedUntil: { $lte: now } },
+                    { isLocked: { $exists: false } }
+                ]
+            },
+            {
+                $set: {
+                    isLocked: true,
+                    lockedUntil: lockExpiry
+                }
+            },
+            { new: true }
+        );
+
+        if (!lockedAccount) {
+            return res.status(409).json({
+                message: "Another transaction is currently processing on this account. Please wait a moment."
             });
         }
 
+        accountLocked = true;
+
         /*
-            5. Create pending transaction OUTSIDE session so retries can see it
+            6. Create pending transaction OUTSIDE session so retries can see it
         */
         const transaction = await Transaction.create({
             fromAccount,
@@ -102,11 +148,18 @@ const createTransaction = async (req, res) => {
         });
 
         /*
-            6. Create ledger entries & finalize inside a database session
+            7. Create ledger entries & finalize inside a database session
         */
         try {
             session = await mongoose.startSession();
             session.startTransaction();
+
+            // Read balance inside the locked session
+            const balance = await fromUserAccount.getBalance(session);
+
+            if (balance < amount) {
+                throw new Error(`Insufficient balance, current balance is ₹${balance}. Requested amount is ₹${amount}`);
+            }
 
             await Ledger.create(
                 [
@@ -145,18 +198,28 @@ const createTransaction = async (req, res) => {
                 await session.abortTransaction();
                 session.endSession();
             }
-            // Mark transaction as failed so retries know it didn't go through
             transaction.status = "failed";
             await transaction.save();
-            console.error("Session error during transaction:", sessionError);
-            return res.status(500).json({
+
+            // Release lock immediately on failure
+            await Account.findByIdAndUpdate(fromAccount, { isLocked: false, lockedUntil: null });
+            accountLocked = false;
+
+            console.error("Session error during transaction:", sessionError.message);
+            return res.status(400).json({
                 success: false,
-                message: "Transaction failed during processing"
+                message: sessionError.message || "Transaction failed during processing"
             });
         }
 
         /*
-            6. Send email notifications safely
+            8. Release lock on success
+        */
+        await Account.findByIdAndUpdate(fromAccount, { isLocked: false, lockedUntil: null });
+        accountLocked = false;
+
+        /*
+            9. Send email notifications safely
         */
         try {
             if (fromUserAccount.user?.email) {
@@ -177,9 +240,8 @@ const createTransaction = async (req, res) => {
         });
     }
     catch (error) {
-        if (session) {
-            await session.abortTransaction();
-            session.endSession();
+        if (accountLocked && fromAccount) {
+            await Account.findByIdAndUpdate(fromAccount, { isLocked: false, lockedUntil: null });
         }
         console.error("Error creating transaction:", error);
         return res.status(500).json({
@@ -190,14 +252,21 @@ const createTransaction = async (req, res) => {
 };
 
 const createInitialFundsTransaction = async (req, res) => {
-    let session
+    let session;
     try {
-        const {toAccount,amount,idempotencyKey} = req.body;
+        const { toAccount, amount, idempotencyKey } = req.body;
 
-        if(!toAccount || !amount || !idempotencyKey){
+        if (!toAccount || !amount || !idempotencyKey) {
             return res.status(400).json({
                 success: false,
                 message: "All fields are required"
+            });
+        }
+
+        if (typeof amount !== "number" || amount <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Amount must be a positive number"
             });
         }
 
@@ -231,9 +300,9 @@ const createInitialFundsTransaction = async (req, res) => {
             }
         }
 
-        const toUserAccount = await Account.findOne({_id : toAccount})
+        const toUserAccount = await Account.findOne({ _id: toAccount }).populate("user");
 
-        if(!toUserAccount){
+        if (!toUserAccount) {
             return res.status(404).json({
                 success: false,
                 message: "To account not found"
@@ -241,9 +310,9 @@ const createInitialFundsTransaction = async (req, res) => {
         }
         const fromUserAccount = await Account.findOne({
             user: req.user._id
-        })
+        });
         
-        if(!fromUserAccount){
+        if (!fromUserAccount) {
             return res.status(404).json({
                 success: false,
                 message: "From account not found"
@@ -295,14 +364,21 @@ const createInitialFundsTransaction = async (req, res) => {
             await session.commitTransaction();
             session.endSession();
 
-            await sendTransactionEmail(toUserAccount.user.email, toUserAccount.user.name, transaction._id);
+            if (toUserAccount.user?.email) {
+                await sendTransactionEmail(toUserAccount.user.email, toUserAccount.user.name, transaction._id);
+            }
+
+            return res.status(200).json({
+                success: true,
+                message: "Initial funds added successfully",
+                transaction
+            });
         } 
         catch (sessionError) {
             if (session) {
                 await session.abortTransaction();
                 session.endSession();
             }
-            // Mark transaction as failed so retries know it didn't go through
             transaction.status = "failed";
             await transaction.save();
             console.error("Session error during initial fund transaction:", sessionError);
@@ -320,4 +396,4 @@ const createInitialFundsTransaction = async (req, res) => {
     }
 };
 
-export default { createTransaction,createInitialFundsTransaction };
+export default { createTransaction, createInitialFundsTransaction };
