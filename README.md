@@ -389,13 +389,18 @@ Allows a system user (`systemUser: true`) to seed liquidity into a user's accoun
 
 ## 🛡️ Idempotency & Concurrency Model
 
-1. **Unique Key Indexing**: `Transaction.idempotencyKey` has a unique database index.
+1. **Unique Key Indexing**: `Transaction.idempotencyKey` has an enforced unique database index.
 2. **State Status Handling**:
    - `success`: Returns `409 Conflict` with the existing transaction data.
    - `pending`: Returns `200 OK` with `"Transaction is still processing"`.
    - `failed`: Returns `400 Bad Request` with `"Transaction has failed"`.
    - `reversed`: Returns `409 Conflict` with `"Transaction has been reversed"`.
-3. **Optimistic Staging**: The transaction document is inserted with `status: "pending"` before starting the database transaction session, preventing concurrent duplicate requests.
+3. **Optimistic Staging**: The transaction document is inserted with `status: "pending"` before starting the database transaction session, ensuring in-flight retries are immediately detected.
+4. **Account Locking & Concurrency Control**:
+   - When a transfer initiates, the source account is atomically locked (`isLocked: true`, `lockedUntil: +30s`).
+   - If a concurrent transfer is attempted on the same account while one is processing, the API immediately returns `409 Conflict` (`"Another transaction is currently processing on this account. Please wait a moment."`).
+   - If an unexpected crash occurs, the lock automatically expires after 30 seconds, restoring normal account operations.
+
 
 ---
 
