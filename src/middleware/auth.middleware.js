@@ -39,7 +39,7 @@ const authMiddleware = async (req, res, next) => {
 // middleware to check if user is system user
 const authSystemMiddleware = async (req,res,next) =>{
     try {
-        const token = req.cookies || req.headers.authorization.split(" ")[1];
+        const token = req.cookies?.token || req.headers.authorization.split(" ")[1];
         
         if(!token){
             return res.status(401).json({

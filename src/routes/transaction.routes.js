@@ -5,7 +5,9 @@ import transactionControllers from "../controllers/transaction.controllers.js";
 const router = express.Router();
 
 router.post("/", authMiddleware, transactionControllers.createTransaction);
-// create initial transaction for system user
+
 router.post("/system/initialifund", authSystemMiddleware, transactionControllers.createInitialFundsTransaction);
 
-export default router;
+router.get("/history", authMiddleware, transactionControllers.getTransactionHistory);
+
+export default router;''

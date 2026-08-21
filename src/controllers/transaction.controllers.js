@@ -396,4 +396,140 @@ const createInitialFundsTransaction = async (req, res) => {
     }
 };
 
-export default { createTransaction, createInitialFundsTransaction };
+const getTransactionHistory = async (req, res) => {
+    try {
+        // Pagination
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+
+        const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 10));
+
+        const skip = (page - 1) * limit;
+
+        // Query parameters
+        const {
+            status,
+            type,
+            startDate,
+            endDate,
+            accountId
+        } = req.query;
+
+        // Validate accountId
+        if (!mongoose.Types.ObjectId.isValid(accountId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid accountId format"
+            });
+        }
+
+        // Make sure account belongs to logged-in user
+        const userAccount = await Account.findOne({
+            _id: accountId,
+            user: req.user._id
+        });
+
+        if (!userAccount) {
+            return res.status(404).json({
+                success: false,
+                message: "Account not found"
+            });
+        }
+
+        // Build transaction filter
+        const filter = {};
+
+        // Debit / Credit / All
+        if (type === "debit") {
+            filter.fromAccount = userAccount._id;
+        }
+        else if (type === "credit") {
+            filter.toAccount = userAccount._id;
+        }
+        else {
+            filter.$or = [
+                { fromAccount: userAccount._id },
+                { toAccount: userAccount._id }
+            ];
+        }
+
+        // Status filter
+        if (status) {
+            filter.status = status;
+        }
+
+        // Date filter
+        if (startDate || endDate) {
+            filter.createdAt = {};
+
+            if (startDate) {
+                filter.createdAt.$gte = new Date(startDate);
+            }
+
+            if (endDate) {
+                filter.createdAt.$lte = new Date(endDate);
+            }
+        }
+
+        // Fetch transactions + total count
+        const [transactions, totalTransactions] =
+            await Promise.all([
+                Transaction.find(filter)
+                    .populate({
+                        path: "fromAccount",
+                        select: "_id currency user",
+                        populate: {
+                            path: "user",
+                            select: "name email"
+                        }
+                    })
+                    .populate({
+                        path: "toAccount",
+                        select: "_id currency user",
+                        populate: {
+                            path: "user",
+                            select: "name email"
+                        }
+                    })
+                    .sort({ createdAt: -1 })
+                    .skip(skip)
+                    .limit(limit),
+
+                Transaction.countDocuments(filter)
+            ]);
+
+        const totalPages =
+            Math.ceil(totalTransactions / limit);
+
+        return res.status(200).json({
+            success: true,
+            data: transactions,
+            pagination: {
+                currentPage: page,
+                limit,
+                totalTransactions,
+                totalPages,
+                hasNextPage: page < totalPages,
+                hasPreviousPage: page > 1
+            }
+        });
+
+    } catch (error) {
+        console.error(
+            "Error fetching transaction history:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error.message ||
+                "Internal server error while fetching transaction history"
+        });
+    }
+};
+
+export default { 
+    createTransaction, 
+    createInitialFundsTransaction, 
+    getTransactionHistory 
+};
