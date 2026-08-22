@@ -405,7 +405,6 @@ const getTransactionHistory = async (req, res) => {
 
         const skip = (page - 1) * limit;
 
-        // Query parameters
         const {
             status,
             type,
@@ -414,7 +413,6 @@ const getTransactionHistory = async (req, res) => {
             accountId
         } = req.query;
 
-        // Validate accountId
         if (!mongoose.Types.ObjectId.isValid(accountId)) {
             return res.status(400).json({
                 success: false,
@@ -422,7 +420,6 @@ const getTransactionHistory = async (req, res) => {
             });
         }
 
-        // Make sure account belongs to logged-in user
         const userAccount = await Account.findOne({
             _id: accountId,
             user: req.user._id
@@ -435,10 +432,8 @@ const getTransactionHistory = async (req, res) => {
             });
         }
 
-        // Build transaction filter
         const filter = {};
 
-        // Debit / Credit / All
         if (type === "debit") {
             filter.fromAccount = userAccount._id;
         }
@@ -452,12 +447,11 @@ const getTransactionHistory = async (req, res) => {
             ];
         }
 
-        // Status filter
         if (status) {
             filter.status = status;
         }
 
-        // Date filter
+
         if (startDate || endDate) {
             filter.createdAt = {};
 
@@ -470,7 +464,6 @@ const getTransactionHistory = async (req, res) => {
             }
         }
 
-        // Fetch transactions + total count
         const [transactions, totalTransactions] =
             await Promise.all([
                 Transaction.find(filter)
