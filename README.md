@@ -7,7 +7,7 @@
 [![Nodemailer](https://img.shields.io/badge/Nodemailer-OAuth2-007ACC?logo=gmail&logoColor=white)](https://nodemailer.com/)
 
 > **ACID-Compliant Double-Entry Ledger & Financial Transaction Management REST API.**  
-> Built with Node.js, Express, MongoDB (Mongoose), JWT authentication with token blacklisting, and Nodemailer email alerts.
+> Built with Node.js, Express, MongoDB (Mongoose), JWT authentication with token blacklisting, atomic account locking, dynamic balance aggregation, and automated Nodemailer email alerts.
 
 ---
 
@@ -34,7 +34,7 @@
 
 ## 📖 Overview
 
-The **Transaction Ledger API** is a financial transaction backend engineered to guarantee data consistency, prevent double-spending, enforce request idempotency, and maintain an immutable ledger audit trail.
+The **Transaction Ledger API** is a high-integrity financial transaction backend engineered to guarantee ledger consistency, prevent double-spending, enforce request idempotency, protect against concurrent race conditions via atomic account locks, and maintain an immutable audit trail.
 
 All transfers adhere to the **Double-Entry Bookkeeping** principle: every transaction simultaneously writes equal debit and credit records within a single atomic MongoDB multi-document session.
 
@@ -45,20 +45,22 @@ All transfers adhere to the **Double-Entry Bookkeeping** principle: every transa
 - **Double-Entry Bookkeeping Ledger**: Every money movement creates linked `debit` and `credit` records in the `Ledger` collection.
 - **Ledger Immutability Guards**: Mongoose pre-hooks block all update and delete actions on the `Ledger` model (`updateOne`, `updateMany`, `findOneAndUpdate`, `findByIdAndUpdate`, `deleteOne`, `deleteMany`, `findOneAndDelete`, `findOneAndReplace`, `remove`).
 - **ACID Database Transactions**: Multi-document atomic transactions via Mongoose sessions (`startSession`, `startTransaction`, `commitTransaction`, `abortTransaction`) guarantee that either both debit and credit succeed or the transaction rolls back completely.
-- **Enforced Idempotency**: All transfer requests require a unique `idempotencyKey`. The system checks existing keys to prevent duplicate execution across retries and race conditions.
-- **Dynamic Balance Aggregation**: Balances are calculated dynamically via a MongoDB aggregation pipeline over ledger entries ($\text{Total Credits} - \text{Total Debits}$) rather than relying on mutable balance fields.
+- **Atomic Account Locking**: Implements optimistic distributed locking on accounts (`isLocked: true`, `lockedUntil: +30s TTL`) during transfers to prevent simultaneous race conditions and concurrent double-debits.
+- **Enforced Idempotency**: All transfer requests require a unique `idempotencyKey`. The system checks existing keys to prevent duplicate execution across client retries and network timeouts.
+- **Dynamic Balance Aggregation**: Balances are calculated dynamically via a MongoDB aggregation pipeline over ledger entries ($\text{Total Credits} - \text{Total Debits}$) with optional transaction session support, avoiding out-of-sync mutable balance columns.
+- **Paginated Transaction History & Filtering**: Advanced transaction ledger queries supporting filters by account, transaction type (`debit` / `credit`), status (`pending`, `success`, `failed`, `reversed`), date range (`startDate`, `endDate`), and pagination.
 - **Authentication & JWT Blacklisting**:
   - Passwords hashed with `bcrypt` (salt rounds = 10).
   - JWT tokens delivered via HTTP-only cookies and `Authorization: Bearer <token>` headers.
   - Logging out invalidates the active token by adding it to the `tokenBlackList` collection.
-  - Role-based authorization guard (`systemUser`) for privileged administrative actions.
+  - Role-based authorization guard (`systemUser`) for privileged liquidity injections.
 - **Automated Email Notifications**: Asynchronous email delivery for user registration and transaction confirmation via Nodemailer configured with Google OAuth2.
 
 ---
 
 ## 🏛 System Architecture & Flow
 
-### Transaction Processing Lifecycle
+### Transaction Processing & Concurrency Lifecycle
 
 ```mermaid
 sequenceDiagram
@@ -78,14 +80,17 @@ sequenceDiagram
     Auth->>Auth: Verify JWT & Attach req.user
     Auth->>Controller: Forward authenticated request
 
-    Controller->>DB: Validate accounts & check idempotencyKey
+    Controller->>DB: Validate accounts, ownership & check idempotencyKey
     alt Idempotency Key Exists
-        Controller-->>Client: Return status (409 Conflict / 200 Processing / 400 Failed)
+        Controller-->>Client: Return existing status (409 Conflict / 200 Processing / 400 Failed)
+    end
+    alt Caller does not own source account
+        Controller-->>Client: 403 Forbidden ("Unauthorized: You do not own the source account")
     end
 
-    Controller->>DB: Calculate balance via account.getBalance()
-    alt Balance < Amount
-        Controller-->>Client: 400 Bad Request ("Insufficient balance")
+    Controller->>DB: Atomically acquire 30s lock on fromAccount
+    alt Account is already locked
+        Controller-->>Client: 409 Conflict ("Another transaction is currently processing...")
     end
 
     Controller->>DB: Create Transaction record (status: 'pending')
@@ -93,18 +98,19 @@ sequenceDiagram
     rect rgb(240, 248, 255)
         Note over Controller,DB: MongoDB ACID Transaction Session
         Controller->>DB: Start Session & Transaction
+        Controller->>DB: Read session-locked balance via getBalance(session)
+        alt Insufficient Balance
+            Controller->>DB: Abort Session & Release Account Lock
+            Controller-->>Client: 400 Bad Request ("Insufficient balance...")
+        end
         Controller->>DB: Create Ledger DEBIT entry for fromAccount
         Controller->>DB: Create Ledger CREDIT entry for toAccount
         Controller->>DB: Update Transaction status = 'success'
         Controller->>DB: Commit Session
     end
 
-    opt Session Fails
-        Controller->>DB: Abort Session & Set Transaction status = 'failed'
-        Controller-->>Client: 500 Internal Server Error
-    end
-
-    Controller->>Email: Send transaction email (Async)
+    Controller->>DB: Release Account Lock (isLocked: false)
+    Controller->>Email: Send transaction confirmation emails (Async)
     Controller-->>Client: 200 OK (Transaction details)
 ```
 
@@ -134,6 +140,8 @@ erDiagram
         ObjectId user FK "Required, Indexed"
         string status "active | frozen | closed, Default: active"
         string currency "Default: INR"
+        boolean isLocked "Default: false"
+        date lockedUntil "Default: null (TTL Lock)"
         date createdAt
         date updatedAt
     }
@@ -273,6 +281,8 @@ Creates a new financial account associated with the authenticated user.
         "user": "66bf04a9e2b5c12345678901",
         "status": "active",
         "currency": "INR",
+        "isLocked": false,
+        "lockedUntil": null,
         "createdAt": "2026-08-17T18:05:00.000Z",
         "updatedAt": "2026-08-17T18:05:00.000Z"
       }
@@ -298,6 +308,8 @@ Retrieves all accounts owned by the authenticated user.
           "user": "66bf04a9e2b5c12345678901",
           "status": "active",
           "currency": "INR",
+          "isLocked": false,
+          "lockedUntil": null,
           "createdAt": "2026-08-17T18:05:00.000Z"
         }
       ]
@@ -330,7 +342,7 @@ Computes dynamic balance ($\sum \text{Credits} - \sum \text{Debits}$) from ledge
 ### 3. Transaction Operations (`/api/transactions`)
 
 #### 🔹 Create Transaction (Peer-to-Peer Transfer)
-Performs an atomic money transfer between two active accounts and generates corresponding double-entry ledger records.
+Performs an atomic money transfer between two active accounts, acquires an account lock, and generates double-entry ledger records.
 
 - **URL**: `POST /api/transactions`
 - **Auth**: Required (`authMiddleware`)
@@ -361,14 +373,15 @@ Performs an atomic money transfer between two active accounts and generates corr
       }
     }
     ```
-  - `400 Bad Request`: Insufficient balance, inactive accounts, or missing fields.
+  - `400 Bad Request`: Insufficient balance, non-positive amount, transferring to same account, inactive accounts, or missing fields.
+  - `403 Forbidden`: Authenticated user does not own the source account (`fromAccount`).
   - `404 Not Found`: Invalid source or destination account.
-  - `409 Conflict`: Idempotency key already processed (`success` or `reversed`).
+  - `409 Conflict`: Idempotency collision (already processed) or account is currently locked by another concurrent transaction.
 
 ---
 
 #### 🔹 Initial Funds Deposit (`systemUser` Only)
-Allows a system user (`systemUser: true`) to seed liquidity into a user's account.
+Allows a system user (`systemUser: true`) to seed liquidity into a target user's account.
 
 - **URL**: `POST /api/transactions/system/initialifund`
 - **Auth**: Required (`authSystemMiddleware`)
@@ -383,7 +396,69 @@ Allows a system user (`systemUser: true`) to seed liquidity into a user's accoun
 - **Responses**:
   - `200 OK` (Funds seeded, transaction completed)
   - `401 Unauthorized`: Calling user is not a verified `systemUser` or token is blacklisted.
-  - `404 Not Found`: Account not found.
+  - `404 Not Found`: Target or source system account not found.
+
+---
+
+#### 🔹 Get Transaction History (Paginated & Filterable)
+Retrieves paginated transaction records for an account owned by the user, with support for filtering by type, status, and date range.
+
+- **URL**: `GET /api/transactions/history`
+- **Auth**: Required (`authMiddleware`)
+- **Query Parameters**:
+  | Parameter | Type | Required | Description |
+  | :--- | :--- | :--- | :--- |
+  | `accountId` | String | **Yes** | MongoDB ObjectId of the account |
+  | `page` | Number | No | Page number (default: `1`) |
+  | `limit` | Number | No | Page limit (default: `10`, max: `50`) |
+  | `type` | String | No | Filter by `'debit'` or `'credit'` (default: all) |
+  | `status` | String | No | Filter by `'pending'`, `'success'`, `'failed'`, `'reversed'` |
+  | `startDate` | Date String | No | ISO date string for start of date range |
+  | `endDate` | Date String | No | ISO date string for end of date range |
+
+- **Responses**:
+  - `200 OK`
+    ```json
+    {
+      "success": true,
+      "data": [
+        {
+          "_id": "66bf0631e2b5c12345678904",
+          "fromAccount": {
+            "_id": "66bf0581e2b5c12345678902",
+            "currency": "INR",
+            "user": {
+              "name": "john doe",
+              "email": "john@example.com"
+            }
+          },
+          "toAccount": {
+            "_id": "66bf0595e2b5c12345678903",
+            "currency": "INR",
+            "user": {
+              "name": "jane doe",
+              "email": "jane@example.com"
+            }
+          },
+          "amount": 2500,
+          "status": "success",
+          "idempotencyKey": "unique-tx-key-12345",
+          "createdAt": "2026-08-17T18:10:00.000Z",
+          "updatedAt": "2026-08-17T18:10:00.000Z"
+        }
+      ],
+      "pagination": {
+        "currentPage": 1,
+        "limit": 10,
+        "totalTransactions": 1,
+        "totalPages": 1,
+        "hasNextPage": false,
+        "hasPreviousPage": false
+      }
+    }
+    ```
+  - `400 Bad Request`: Invalid `accountId` format.
+  - `404 Not Found`: Account not found or not owned by the authenticated user.
 
 ---
 
@@ -398,9 +473,8 @@ Allows a system user (`systemUser: true`) to seed liquidity into a user's accoun
 3. **Optimistic Staging**: The transaction document is inserted with `status: "pending"` before starting the database transaction session, ensuring in-flight retries are immediately detected.
 4. **Account Locking & Concurrency Control**:
    - When a transfer initiates, the source account is atomically locked (`isLocked: true`, `lockedUntil: +30s`).
-   - If a concurrent transfer is attempted on the same account while one is processing, the API immediately returns `409 Conflict` (`"Another transaction is currently processing on this account. Please wait a moment."`).
-   - If an unexpected crash occurs, the lock automatically expires after 30 seconds, restoring normal account operations.
-
+   - If another transaction is active on the same account, a `409 Conflict` response is returned.
+   - The lock is released on success or immediately in error/catch blocks.
 
 ---
 
@@ -419,12 +493,12 @@ transaction-ledger-api/
     │   └── db.js                    # Mongoose MongoDB connection helper
     ├── controllers/
     │   ├── account.controllers.js    # Account creation & balance queries
-    │   ├── transaction.controllers.js# Atomic transactions & ledger generation
+    │   ├── transaction.controllers.js# Atomic transactions, history & ledger generation
     │   └── user.controllers.js       # Register, login, logout & token blacklisting
     ├── middleware/
     │   └── auth.middleware.js        # authMiddleware & authSystemMiddleware
     ├── models/
-    │   ├── account.models.js         # Account schema with getBalance() aggregation
+    │   ├── account.models.js         # Account schema with locking & getBalance() aggregation
     │   ├── blackList.models.js       # Token blacklist schema
     │   ├── ledger.models.js          # Immutable double-entry ledger schema
     │   ├── transaction.models.js     # Transaction schema with idempotency key
@@ -501,7 +575,9 @@ The server listens by default on port `3000`.
 | :--- | :--- |
 | **Password Hashing** | Pre-save hook hashes passwords using `bcrypt` with salt rounds = 10. |
 | **JWT Revocation** | Tokens are stored in [`tokenBlackList`](file:///c:/Users/Himan/OneDrive/1.Resource/MERN/transaction-ledger-api/src/models/blackList.models.js) on logout and blocked on subsequent requests. |
+| **Ownership Authorization** | Verifies caller owns source account (`403 Forbidden` on unauthorized transfers). |
+| **Account Concurrency Lock** | Atomic 30-second TTL lock (`isLocked`, `lockedUntil`) prevents simultaneous debits on the same account. |
 | **Protected Sensitive Fields** | User passwords and `systemUser` flags are excluded by default in queries (`select: false`). |
 | **Ledger Immutability** | Pre-hooks on the `Ledger` schema throw errors on any modification or deletion. |
-| **No Overdrafts** | Dynamic aggregation checks total balance before transaction execution. |
+| **No Overdrafts** | Dynamic aggregation checks total balance inside transaction session before transfer execution. |
 | **Atomicity** | MongoDB multi-document transactions ensure rollback on partial execution failures. |
